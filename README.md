@@ -61,6 +61,8 @@ Ensure `SQLITE_PATH` points to a writable path (default `./data/bot.db`).
 - `/add_alarm`, `/edit_alarm`, `/delete_alarm`, `/list_alarms`  
 - `/active`, `/inactive` — activate or deactivate  
 - `/set_timezone`, `/list_timezones`, `/set_primary_timezone`  
+- `/download` — JSON export of alarms and timezones  
+- `/upload` — send that JSON to **replace** all alarms and timezones (use after `/upload` when prompted)  
 
 ## Extending
 

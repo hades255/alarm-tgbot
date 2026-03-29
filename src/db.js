@@ -303,6 +303,14 @@ export function updateSnoozeTask(id, userId, patch) {
     .run(params).changes;
 }
 
+/** Clears alarms, timezones, and snooze tasks for restore/import (user row kept). */
+export function clearUserSchedulableData(userId) {
+  const d = getDb();
+  d.prepare("DELETE FROM snooze_tasks WHERE user_id = ?").run(userId);
+  d.prepare("DELETE FROM alarms WHERE user_id = ?").run(userId);
+  d.prepare("DELETE FROM timezones WHERE user_id = ?").run(userId);
+}
+
 export function deleteAlarm(alarmId, userId) {
   return getDb()
     .prepare("DELETE FROM alarms WHERE id = ? AND user_id = ?")

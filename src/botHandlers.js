@@ -1,4 +1,4 @@
-import { Markup } from "telegraf";
+import { Markup, Input } from "telegraf";
 import { DateTime } from "luxon";
 import { config } from "./config.js";
 import {
@@ -22,6 +22,7 @@ import {
 import { parseTimeHhmm } from "./time.js";
 import { getNextAlarmFireUtc, formatRemainingUntilNext } from "./scheduler.js";
 import { log } from "./logger.js";
+import { buildBackupPayload, validateAndRestoreBackup } from "./backup.js";
 import {
   mainMenu,
   startCommandReplyKeyboard,
@@ -111,6 +112,8 @@ Tap **/** next to the message field to pick a command, or use the **/start** key
 /add_alarm, /edit_alarm, /delete_alarm, /list_alarms  
 /active, /inactive — activate or deactivate an alarm  
 /set_timezone, /list_timezones, /set_primary_timezone  
+/download — export alarms and timezones as JSON  
+/upload — send that JSON back to **replace** all alarms and timezones  
 `;
 
 /** UI and scheduler only use alarms (reminder kind is legacy in DB). */
@@ -118,6 +121,22 @@ const UI_ALARM_FILTER = { kind: "alarm" };
 
 /** Avoid sending the extra reply-keyboard hint on every /start (in-memory; resets on bot restart). */
 const startReplyKeyboardSent = new Set();
+
+async function sendBackupDownload(ctx) {
+  const uid = ctx.from.id;
+  const payload = buildBackupPayload(uid);
+  const json = JSON.stringify(payload, null, 2);
+  const buf = Buffer.from(json, "utf8");
+  const name = `alarm-backup-${DateTime.utc().toFormat("yyyy-LL-dd")}.json`;
+  await ctx.replyWithDocument(Input.fromBuffer(buf, name), {
+    caption: `Backup: ${payload.timezones.length} timezone(s), ${payload.alarms.length} alarm(s). Keep this file private.`,
+  });
+  log.info("Backup downloaded", {
+    userId: uid,
+    timezones: payload.timezones.length,
+    alarms: payload.alarms.length,
+  });
+}
 
 export function registerHandlers(bot) {
   bot.catch((err, ctx) => {
@@ -135,7 +154,10 @@ export function registerHandlers(bot) {
         return next();
       });
     }
-    if (ctx.message && "text" in ctx.message) {
+    if (
+      ctx.message &&
+      ("text" in ctx.message || "document" in ctx.message)
+    ) {
       return authUser(ctx, () => {
         syncUser(ctx);
         return next();
@@ -164,6 +186,7 @@ export function registerHandlers(bot) {
 
   bot.start(async (ctx) => {
     syncUser(ctx);
+    clearSession(ctx.from.id);
     await ctx.reply("Welcome. Choose an action:", mainMenu());
     const uid = ctx.from.id;
     if (!startReplyKeyboardSent.has(uid)) {
@@ -188,11 +211,25 @@ export function registerHandlers(bot) {
     ["set_timezone", null],
     ["list_timezones", null],
     ["set_primary_timezone", null],
+    ["download", null],
+    ["upload", null],
   ];
 
   for (const [cmd, kb] of cmdMap) {
     bot.command(cmd, async (ctx) => {
       syncUser(ctx);
+      if (cmd === "download") {
+        await sendBackupDownload(ctx);
+        return;
+      }
+      if (cmd === "upload") {
+        setSession(ctx.from.id, "UPLOAD_BACKUP", {});
+        await ctx.reply(
+          "Send a **.json** file from Download. This **replaces** all your alarms and timezones.\n\nCancel: /start",
+          { parse_mode: "Markdown", ...backMain() }
+        );
+        return;
+      }
       if (cmd === "list_alarms") {
         await sendAlarmList(ctx, {});
         return;
@@ -261,6 +298,20 @@ export function registerHandlers(bot) {
       parse_mode: "Markdown",
       ...backMain(),
     });
+  });
+
+  bot.action("menu:backup_download", async (ctx) => {
+    await ctx.answerCbQuery();
+    await sendBackupDownload(ctx);
+  });
+
+  bot.action("menu:backup_upload", async (ctx) => {
+    await ctx.answerCbQuery();
+    setSession(ctx.from.id, "UPLOAD_BACKUP", {});
+    await ctx.reply(
+      "Send a **.json** file from Download. This **replaces** all your alarms and timezones.\n\nCancel: /start",
+      { parse_mode: "Markdown", ...mainMenu() }
+    );
   });
 
   bot.action("menu:add_root", async (ctx) => {
@@ -769,6 +820,52 @@ export function registerHandlers(bot) {
       fireAt,
     });
     await ctx.reply(`Snooze updated to ${mins} minutes from now.`);
+  });
+
+  bot.on("document", async (ctx, next) => {
+    const uid = ctx.from?.id;
+    if (uid == null) return next();
+    const { scene } = getSession(uid);
+    if (scene !== "UPLOAD_BACKUP") return next();
+    const doc = ctx.message.document;
+    if (!doc) return next();
+    if (doc.file_size != null && doc.file_size > 5 * 1024 * 1024) {
+      await ctx.reply("File too large (max 5 MB).");
+      return;
+    }
+    const fname = (doc.file_name || "").toLowerCase();
+    if (!fname.endsWith(".json")) {
+      await ctx.reply("Please send a `.json` backup file.", {
+        parse_mode: "Markdown",
+      });
+      return;
+    }
+    try {
+      const link = await ctx.telegram.getFileLink(doc.file_id);
+      const res = await fetch(link.href);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = Buffer.from(await res.arrayBuffer()).toString("utf8");
+      const result = validateAndRestoreBackup(uid, raw);
+      if (!result.ok) {
+        await ctx.reply(`Restore failed: ${result.error}`);
+        return;
+      }
+      clearSession(uid);
+      await ctx.reply(
+        `Restored ${result.alarms} alarm(s) and ${result.timezones} timezone(s).`,
+        mainMenu()
+      );
+      log.info("Backup restored from upload", {
+        userId: uid,
+        alarms: result.alarms,
+        timezones: result.timezones,
+      });
+    } catch (e) {
+      log.error("Backup upload failed", { userId: uid, err: e?.message || e });
+      await ctx.reply(
+        `Could not read the file. Try again or use a fresh export from /download.`
+      );
+    }
   });
 
   bot.on("text", async (ctx, next) => {

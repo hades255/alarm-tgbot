@@ -24,6 +24,10 @@ export function mainMenu() {
       Markup.button.callback("List", "menu:tz_list"),
       Markup.button.callback("Set primary", "menu:tz_primary"),
     ],
+    [
+      Markup.button.callback("Download backup", "menu:backup_download"),
+      Markup.button.callback("Upload backup", "menu:backup_upload"),
+    ],
     [Markup.button.callback("Help", "menu:help")],
   ]);
 }
