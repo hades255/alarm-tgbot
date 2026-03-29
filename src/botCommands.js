@@ -16,11 +16,11 @@ export const BOT_COMMANDS = [
     command: "set_primary_timezone",
     description: "Choose primary timezone for schedules",
   },
-  // { command: "download", description: "Download alarms & timezones (JSON)" },
-  // {
-  //   command: "upload",
-  //   description: "Upload backup JSON (replaces alarms & timezones)",
-  // },
+  { command: "download", description: "Download alarms & timezones (JSON)" },
+  {
+    command: "upload",
+    description: "Upload backup JSON (replaces alarms & timezones)",
+  },
 ];
 
 export async function registerBotCommands(bot) {
