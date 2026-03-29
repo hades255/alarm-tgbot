@@ -1,0 +1,144 @@
+import { DateTime } from "luxon";
+import { parseTimeHhmm, parseWeekdaysJson, formatInZones } from "./time.js";
+import {
+  listAlarmsForScheduler,
+  markAlarmFired,
+  dueSnoozeTasks,
+  deleteSnoozeTask,
+  listUserTimezones,
+} from "./db.js";
+
+export function minuteKeyUtc(dt) {
+  return dt.toUTC().startOf("minute").toISO();
+}
+
+export function shouldFireAlarm(alarm, primaryIana, nowUtc) {
+  const t = parseTimeHhmm(alarm.time_hhmm);
+  if (!t) return false;
+  const local = nowUtc.setZone(primaryIana);
+  if (!local.isValid) return false;
+  if (local.hour !== t.hour || local.minute !== t.minute) return false;
+
+  const wday0Sun = local.weekday % 7;
+
+  switch (alarm.recurrence) {
+    case "daily": {
+      const wd = parseWeekdaysJson(alarm.weekdays);
+      if (wd == null || wd.length === 0) return true;
+      return wd.includes(wday0Sun);
+    }
+    case "weekly": {
+      if (!alarm.anchor_date) return false;
+      const anchor = DateTime.fromISO(String(alarm.anchor_date), {
+        zone: primaryIana,
+      });
+      if (!anchor.isValid) return false;
+      return anchor.weekday % 7 === wday0Sun;
+    }
+    case "monthly": {
+      if (!alarm.anchor_date) return false;
+      const anchor = DateTime.fromISO(String(alarm.anchor_date), {
+        zone: primaryIana,
+      });
+      if (!anchor.isValid) return false;
+      return local.day === anchor.day;
+    }
+    case "yearly": {
+      if (!alarm.anchor_date) return false;
+      const anchor = DateTime.fromISO(String(alarm.anchor_date), {
+        zone: primaryIana,
+      });
+      if (!anchor.isValid) return false;
+      return local.month === anchor.month && local.day === anchor.day;
+    }
+    default:
+      return false;
+  }
+}
+
+export function orderedZonesForUser(userId) {
+  const rows = listUserTimezones(userId);
+  const prim = rows.filter((r) => r.is_primary);
+  const rest = rows.filter((r) => !r.is_primary);
+  return [...prim, ...rest].map((r) => r.timezone);
+}
+
+export function buildNotificationText({
+  title,
+  description,
+  userId,
+  firedAtIsoUtc,
+}) {
+  const zones = orderedZonesForUser(userId);
+  if (zones.length === 0) zones.push("UTC");
+  const lines = formatInZones(firedAtIsoUtc, zones);
+  const primaryLine = lines[0];
+  const otherLines = lines.slice(1);
+  let body = `${title}\n\n${description || "(no description)"}\n\n`;
+  body += `Primary timezone: ${primaryLine}\n`;
+  if (otherLines.length) {
+    body += otherLines.map((l) => `Timezones: ${l}`).join("\n");
+  }
+  return body;
+}
+
+export function snoozeKeyboard(alarmId, taskId) {
+  const mins = [10, 20, 30, 40, 50, 60];
+  const row = mins.map((m) => ({
+    text: `${m} min`,
+    callback_data:
+      taskId != null ? `sz:t:${taskId}:${m}` : `sz:a:${alarmId}:${m}`,
+  }));
+  return [row];
+}
+
+export async function runSchedulerTick(bot, log) {
+  const now = DateTime.utc();
+  const key = minuteKeyUtc(now);
+  const nowIso = now.toISO();
+
+  const tasks = dueSnoozeTasks(nowIso);
+  for (const task of tasks) {
+    try {
+      const firedIso = now.toISO();
+      const text = buildNotificationText({
+        title: task.title,
+        description: task.description,
+        userId: task.user_id,
+        firedAtIsoUtc: firedIso,
+      });
+      await bot.telegram.sendMessage(task.user_id, text, {
+        reply_markup: {
+          inline_keyboard: snoozeKeyboard(task.alarm_id, task.id),
+        },
+      });
+      deleteSnoozeTask(task.id);
+    } catch (e) {
+      log?.error?.("Snooze delivery failed", e);
+      deleteSnoozeTask(task.id);
+    }
+  }
+
+  const alarms = listAlarmsForScheduler();
+  for (const alarm of alarms) {
+    const tz = alarm.primary_tz;
+    if (!shouldFireAlarm(alarm, tz, now)) continue;
+    if (alarm.last_fired_at === key) continue;
+    try {
+      const firedIso = now.toISO();
+      const text = buildNotificationText({
+        title: alarm.title,
+        description: alarm.description,
+        userId: alarm.user_id,
+        firedAtIsoUtc: firedIso,
+      });
+      const kindLabel = alarm.kind === "reminder" ? "Reminder" : "Alarm";
+      await bot.telegram.sendMessage(alarm.user_id, `${kindLabel}\n\n${text}`, {
+        reply_markup: { inline_keyboard: snoozeKeyboard(alarm.id, null) },
+      });
+      markAlarmFired(alarm.id, key);
+    } catch (e) {
+      log?.error?.("Alarm delivery failed", e);
+    }
+  }
+}

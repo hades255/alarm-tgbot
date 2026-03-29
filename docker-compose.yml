@@ -1,0 +1,15 @@
+services:
+  alarm-bot:
+    build: .
+    container_name: telegram-alarm-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SQLITE_PATH: /data/bot.db
+      DEFAULT_TIMEZONE: UTC
+    volumes:
+      - alarm_data:/data
+
+volumes:
+  alarm_data:

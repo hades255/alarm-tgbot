@@ -1,0 +1,21 @@
+{
+  "name": "telegram-alarm-bot",
+  "version": "1.0.0",
+  "description": "Personal Telegram alarm and reminder bot with SQLite storage",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "luxon": "^3.5.0",
+    "node-cron": "^3.0.3",
+    "telegraf": "^4.16.3"
+  }
+}
