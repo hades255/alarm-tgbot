@@ -7,6 +7,7 @@ import {
   deleteSnoozeTask,
   listUserTimezones,
 } from "./db.js";
+import { log } from "./logger.js";
 
 export function minuteKeyUtc(dt) {
   return dt.toUTC().startOf("minute").toISO();
@@ -92,7 +93,7 @@ export function snoozeKeyboard(alarmId, taskId) {
   return [row];
 }
 
-export async function runSchedulerTick(bot, log) {
+export async function runSchedulerTick(bot) {
   const now = DateTime.utc();
   const key = minuteKeyUtc(now);
   const nowIso = now.toISO();
@@ -113,8 +114,17 @@ export async function runSchedulerTick(bot, log) {
         },
       });
       deleteSnoozeTask(task.id);
+      log.info("Snooze delivered", {
+        taskId: task.id,
+        userId: task.user_id,
+        alarmId: task.alarm_id,
+      });
     } catch (e) {
-      log?.error?.("Snooze delivery failed", e);
+      log.error("Snooze delivery failed", {
+        taskId: task.id,
+        userId: task.user_id,
+        message: e?.response?.description || e?.message || String(e),
+      });
       deleteSnoozeTask(task.id);
     }
   }
@@ -137,8 +147,20 @@ export async function runSchedulerTick(bot, log) {
         reply_markup: { inline_keyboard: snoozeKeyboard(alarm.id, null) },
       });
       markAlarmFired(alarm.id, key);
+      log.info("Scheduled alarm delivered", {
+        alarmId: alarm.id,
+        userId: alarm.user_id,
+        kind: alarm.kind,
+        recurrence: alarm.recurrence,
+        primaryTz: tz,
+        minuteUtc: key,
+      });
     } catch (e) {
-      log?.error?.("Alarm delivery failed", e);
+      log.error("Alarm delivery failed", {
+        alarmId: alarm.id,
+        userId: alarm.user_id,
+        message: e?.response?.description || e?.message || String(e),
+      });
     }
   }
 }

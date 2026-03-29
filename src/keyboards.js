@@ -2,14 +2,18 @@ import { Markup } from "telegraf";
 
 export function mainMenu() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("Add alarm", "menu:add_root")],
-    [Markup.button.callback("Edit alarm", "menu:edit_root")],
-    [Markup.button.callback("Delete alarm", "menu:del_root")],
-    [Markup.button.callback("List alarms", "menu:list")],
+    [
+      Markup.button.callback("Add alarm", "menu:add_root"),
+      Markup.button.callback("Edit", "menu:edit_root"),
+      Markup.button.callback("Delete", "menu:del_root"),
+      Markup.button.callback("List", "menu:list"),
+    ],
     [Markup.button.callback("Activate / deactivate", "menu:toggle_root")],
-    [Markup.button.callback("Set timezone", "menu:tz_set")],
-    [Markup.button.callback("List timezones", "menu:tz_list")],
-    [Markup.button.callback("Set primary timezone", "menu:tz_primary")],
+    [
+      Markup.button.callback("Set timezone", "menu:tz_set"),
+      Markup.button.callback("List", "menu:tz_list"),
+      Markup.button.callback("Set primary", "menu:tz_primary"),
+    ],
     [Markup.button.callback("Help", "menu:help")],
   ]);
 }

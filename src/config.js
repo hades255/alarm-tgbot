@@ -29,3 +29,13 @@ export function assertConfig() {
     );
   }
 }
+
+/** Safe for console (no secrets). */
+export function describeConfigForLog() {
+  return {
+    sqlitePath: config.sqlitePath,
+    defaultTimezone: config.defaultTimezone,
+    allowedUserIdsCount: config.allowedUserIds.length,
+    botTokenConfigured: Boolean(config.botToken),
+  };
+}

@@ -19,6 +19,7 @@ import {
   getDb,
 } from "./db.js";
 import { parseTimeHhmm } from "./time.js";
+import { log } from "./logger.js";
 import {
   mainMenu,
   addAlarmRootMenu,
@@ -46,6 +47,7 @@ async function safeEditMessageText(ctx, text, extra = {}) {
 function authUser(ctx, next) {
   const id = ctx.from?.id;
   if (!id || !config.allowedUserIds.includes(id)) {
+    log.warn("Rejected unauthorized user", { fromId: id });
     return ctx.reply("This bot is private. Your user id is not authorized.");
   }
   return next();
@@ -108,6 +110,14 @@ When a notification fires, use the inline buttons to repeat after 10–60 minute
 `;
 
 export function registerHandlers(bot) {
+  bot.catch((err, ctx) => {
+    log.error("Unhandled bot update", {
+      message: err?.message || String(err),
+      telegram: err?.response?.description,
+      updateType: ctx?.updateType,
+    });
+  });
+
   bot.use((ctx, next) => {
     if (ctx.callbackQuery) {
       return authUser(ctx, () => {
@@ -623,7 +633,8 @@ export function registerHandlers(bot) {
   bot.action(/^del:yes:(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const id = Number(ctx.match[1]);
-    deleteAlarm(id, ctx.from.id);
+    const n = deleteAlarm(id, ctx.from.id);
+    if (n) log.info("Alarm deleted", { alarmId: id, userId: ctx.from.id });
     await safeEditMessageText(ctx, "Deleted.", deleteAlarmRootMenu());
   });
 
@@ -646,6 +657,7 @@ export function registerHandlers(bot) {
     const zone = ctx.match[1];
     const uid = ctx.from.id;
     addUserTimezone(uid, zone, true);
+    log.info("Primary timezone set", { userId: uid, zone });
     await safeEditMessageText(
       ctx,
       `Primary timezone set to ${zone}.`,
@@ -675,6 +687,12 @@ export function registerHandlers(bot) {
       description: desc,
       kind,
     });
+    log.info("Snooze scheduled", {
+      userId: uid,
+      alarmId,
+      minutes: mins,
+      fireAt,
+    });
     await ctx.reply(`Snoozed for ${mins} minutes.`);
   });
 
@@ -696,6 +714,12 @@ export function registerHandlers(bot) {
       fire_at: fireAt,
       title: `${baseTitle} (snooze ${mins}m)`,
     });
+    log.info("Snooze rescheduled", {
+      userId: uid,
+      taskId,
+      minutes: mins,
+      fireAt,
+    });
     await ctx.reply(`Snooze updated to ${mins} minutes from now.`);
   });
 
@@ -716,6 +740,7 @@ export function registerHandlers(bot) {
         return;
       }
       addUserTimezone(uid, zone, false);
+      log.info("Timezone added", { userId: uid, zone });
       clearSession(uid);
       await ctx.reply(`Timezone added: ${zone}`, mainMenu());
       return;
@@ -796,7 +821,7 @@ export function registerHandlers(bot) {
           weekdaysJson = JSON.stringify(sun0);
         }
       }
-      insertAlarm({
+      const alarmId = insertAlarm({
         user_id: uid,
         kind: data.kind,
         recurrence: data.recurrence,
@@ -806,6 +831,13 @@ export function registerHandlers(bot) {
         anchor_date: data.anchor_date || null,
         weekdays: weekdaysJson,
         status: "active",
+      });
+      log.info("Alarm created", {
+        alarmId,
+        userId: uid,
+        kind: data.kind,
+        recurrence: data.recurrence,
+        time_hhmm: hhmm,
       });
       clearSession(uid);
       await ctx.reply(
@@ -850,13 +882,15 @@ export function registerHandlers(bot) {
 }
 
 function formatAlarmLine(a) {
+  const primaryTz =
+    getPrimaryTimezone(a.user_id) || config.defaultTimezone || "UTC";
   const wd = a.weekdays ? ` weekdays=${a.weekdays}` : "";
   const ad = a.anchor_date ? ` anchor=${a.anchor_date}` : "";
   return (
     `ID ${a.id} · ${a.kind} · ${a.recurrence}\n` +
     `Title: ${a.title}\n` +
     `Description: ${a.description || "—"}\n` +
-    `Time: ${a.time_hhmm} (primary TZ)${wd}${ad}\n` +
+    `Time: ${a.time_hhmm} (${primaryTz})${wd}${ad}\n` +
     `Status: ${a.status}`
   );
 }

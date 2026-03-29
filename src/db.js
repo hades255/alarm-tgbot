@@ -2,17 +2,29 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { log } from "./logger.js";
 
 let db;
+let loggedReady;
 
 export function getDb() {
   if (db) return db;
   const dir = path.dirname(config.sqlitePath);
   fs.mkdirSync(dir, { recursive: true });
-  db = new Database(config.sqlitePath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  initSchema(db);
+  const resolved = path.resolve(config.sqlitePath);
+  try {
+    db = new Database(config.sqlitePath);
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    initSchema(db);
+    if (!loggedReady) {
+      log.info("SQLite opened", { path: resolved });
+      loggedReady = true;
+    }
+  } catch (e) {
+    log.error("SQLite init failed", { path: resolved, err: e?.message || e });
+    throw e;
+  }
   return db;
 }
 
@@ -182,6 +194,7 @@ export function getSession(userId) {
   try {
     return { scene: row.scene || "", data: JSON.parse(row.data || "{}") };
   } catch {
+    log.warn("Session data JSON invalid, reset", { userId });
     return { scene: row.scene || "", data: {} };
   }
 }
