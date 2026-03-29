@@ -3,6 +3,7 @@ import { parseTimeHhmm, parseWeekdaysJson, formatInZones } from "./time.js";
 import {
   listAlarmsForScheduler,
   markAlarmFired,
+  deleteAlarm,
   dueSnoozeTasks,
   deleteSnoozeTask,
   listUserTimezones,
@@ -13,12 +14,29 @@ export function minuteKeyUtc(dt) {
   return dt.toUTC().startOf("minute").toISO();
 }
 
+export function isOneTimeAlarm(alarm) {
+  return Number(alarm?.one_time) === 1;
+}
+
 export function shouldFireAlarm(alarm, primaryIana, nowUtc) {
   const t = parseTimeHhmm(alarm.time_hhmm);
   if (!t) return false;
   const local = nowUtc.setZone(primaryIana);
   if (!local.isValid) return false;
   if (local.hour !== t.hour || local.minute !== t.minute) return false;
+
+  if (isOneTimeAlarm(alarm)) {
+    if (!alarm.anchor_date) return false;
+    const anchor = DateTime.fromISO(String(alarm.anchor_date).slice(0, 10), {
+      zone: primaryIana,
+    });
+    if (!anchor.isValid) return false;
+    return (
+      local.year === anchor.year &&
+      local.month === anchor.month &&
+      local.day === anchor.day
+    );
+  }
 
   const wday0Sun = local.weekday % 7;
 
@@ -70,6 +88,24 @@ export function getNextAlarmFireUtc(
   if (!t) return null;
   const localNow = nowUtc.setZone(primaryIana);
   if (!localNow.isValid) return null;
+
+  if (isOneTimeAlarm(alarm)) {
+    if (!alarm.anchor_date) return null;
+    const anchor = DateTime.fromISO(String(alarm.anchor_date).slice(0, 10), {
+      zone: primaryIana,
+    });
+    if (!anchor.isValid) return null;
+    const cand = anchor.set({
+      hour: t.hour,
+      minute: t.minute,
+      second: 0,
+      millisecond: 0,
+    });
+    if (!cand.isValid) return null;
+    const candUtc = cand.toUTC();
+    if (candUtc <= nowUtc) return null;
+    return candUtc;
+  }
 
   for (let offset = 0; offset < 370; offset++) {
     const dayBase = localNow.startOf("day").plus({ days: offset });
@@ -186,17 +222,37 @@ export async function runSchedulerTick(bot) {
         userId: alarm.user_id,
         firedAtIsoUtc: firedIso,
       });
-      await bot.telegram.sendMessage(alarm.user_id, `Alarm\n\n${text}`, {
-        reply_markup: { inline_keyboard: snoozeKeyboard(alarm.id, null) },
+      const oneTime = isOneTimeAlarm(alarm);
+      const label = oneTime ? "One-time alarm" : "Alarm";
+      await bot.telegram.sendMessage(alarm.user_id, `${label}\n\n${text}`, {
+        reply_markup: oneTime
+          ? undefined
+          : { inline_keyboard: snoozeKeyboard(alarm.id, null) },
       });
-      markAlarmFired(alarm.id, key);
-      log.info("Scheduled alarm delivered", {
-        alarmId: alarm.id,
-        userId: alarm.user_id,
-        recurrence: alarm.recurrence,
-        primaryTz: tz,
-        minuteUtc: key,
-      });
+      if (oneTime) {
+        const removed = deleteAlarm(alarm.id, alarm.user_id);
+        if (removed) {
+          log.info("One-time alarm delivered and removed from database", {
+            alarmId: alarm.id,
+            userId: alarm.user_id,
+          });
+        } else {
+          markAlarmFired(alarm.id, key);
+          log.warn("One-time alarm sent but delete failed; marked fired", {
+            alarmId: alarm.id,
+            userId: alarm.user_id,
+          });
+        }
+      } else {
+        markAlarmFired(alarm.id, key);
+        log.info("Scheduled alarm delivered", {
+          alarmId: alarm.id,
+          userId: alarm.user_id,
+          recurrence: alarm.recurrence,
+          primaryTz: tz,
+          minuteUtc: key,
+        });
+      }
     } catch (e) {
       log.error("Alarm delivery failed", {
         alarmId: alarm.id,

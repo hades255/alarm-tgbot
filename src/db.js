@@ -17,6 +17,7 @@ export function getDb() {
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
     initSchema(db);
+    ensureOneTimeColumn(db);
     if (!loggedReady) {
       log.info("SQLite opened", { path: resolved });
       loggedReady = true;
@@ -62,6 +63,7 @@ function initSchema(database) {
       weekdays TEXT,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
       last_fired_at TEXT,
+      one_time INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     );
@@ -96,6 +98,30 @@ function initSchema(database) {
     CREATE INDEX IF NOT EXISTS idx_alarms_status ON alarms(status);
     CREATE INDEX IF NOT EXISTS idx_snooze_fire ON snooze_tasks(fire_at);
   `);
+}
+
+function ensureOneTimeColumn(database) {
+  const cols = database.prepare("PRAGMA table_info(alarms)").all();
+  if (!cols.some((c) => c.name === "one_time")) {
+    database.exec(
+      "ALTER TABLE alarms ADD COLUMN one_time INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+}
+
+/**
+ * Remove the user row; FK CASCADE deletes alarms, user_alarms, timezones,
+ * sessions, and snooze_tasks for that user.
+ */
+export function deleteUserAndAllData(userId) {
+  const d = getDb();
+  const alarmCount = d
+    .prepare("SELECT COUNT(*) AS c FROM alarms WHERE user_id = ?")
+    .get(userId);
+  const n = d
+    .prepare("DELETE FROM users WHERE user_id = ?")
+    .run(userId).changes;
+  return { userDeleted: n > 0, alarmCount: alarmCount?.c ?? 0 };
 }
 
 export function upsertUser(row) {
@@ -225,8 +251,8 @@ export function insertAlarm(row) {
   const d = getDb();
   const info = d
     .prepare(
-      `INSERT INTO alarms (user_id, kind, recurrence, title, description, time_hhmm, anchor_date, weekdays, status)
-       VALUES (@user_id, @kind, @recurrence, @title, @description, @time_hhmm, @anchor_date, @weekdays, @status)`
+      `INSERT INTO alarms (user_id, kind, recurrence, title, description, time_hhmm, anchor_date, weekdays, status, one_time)
+       VALUES (@user_id, @kind, @recurrence, @title, @description, @time_hhmm, @anchor_date, @weekdays, @status, @one_time)`
     )
     .run({
       user_id: row.user_id,
@@ -238,6 +264,7 @@ export function insertAlarm(row) {
       anchor_date: row.anchor_date ?? null,
       weekdays: row.weekdays ?? null,
       status: row.status ?? "active",
+      one_time: row.one_time ? 1 : 0,
     });
   const id = Number(info.lastInsertRowid);
   linkUserAlarm(row.user_id, id);
@@ -299,6 +326,12 @@ export function listAlarms(userId, filters = {}) {
   if (filters.kind) {
     q += " AND kind = ?";
     params.push(filters.kind);
+  }
+  if (filters.oneTime === true) {
+    q += " AND one_time = 1";
+  }
+  if (filters.excludeOneTime === true) {
+    q += " AND IFNULL(one_time, 0) = 0";
   }
   q += " ORDER BY created_at DESC";
   return d.prepare(q).all(...params);

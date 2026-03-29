@@ -39,6 +39,7 @@ export function addAlarmRootMenu() {
       Markup.button.callback("Monthly alarm", "add:alarm:monthly"),
       Markup.button.callback("Yearly alarm", "add:alarm:yearly"),
     ],
+    [Markup.button.callback("One-time alarm", "add:alarm:once")],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
 }
@@ -53,6 +54,7 @@ export function editAlarmRootMenu() {
       Markup.button.callback("Edit monthly", "pick:edit:monthly"),
       Markup.button.callback("Edit yearly", "pick:edit:yearly"),
     ],
+    [Markup.button.callback("Edit one-time", "pick:edit:once")],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
 }
@@ -67,6 +69,7 @@ export function deleteAlarmRootMenu() {
       Markup.button.callback("Delete monthly", "pick:del:monthly"),
       Markup.button.callback("Delete yearly", "pick:del:yearly"),
     ],
+    [Markup.button.callback("Delete one-time", "pick:del:once")],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
 }

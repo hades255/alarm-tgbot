@@ -3,6 +3,7 @@ import { DateTime } from "luxon";
 import { config } from "./config.js";
 import {
   upsertUser,
+  deleteUserAndAllData,
   ensurePrimaryTimezone,
   addUserTimezone,
   listUserTimezones,
@@ -88,6 +89,9 @@ const HELP_TEXT = `Alarm Bot — quick guide
 **Main menu**
 Use the buttons to add, edit, delete, or list alarms, manage timezones, or toggle active state.
 
+**One-time alarm**
+A single fire on the date and time you set (primary timezone). It is deleted from the database after the notification is sent (no snooze).
+
 **Daily schedules**
 You can restrict to specific weekdays or choose “Every day”.
 
@@ -138,6 +142,24 @@ export function registerHandlers(bot) {
       });
     }
     return next();
+  });
+
+  bot.on("my_chat_member", async (ctx) => {
+    const up = ctx.myChatMember;
+    if (!up || up.chat.type !== "private") return;
+    const { new_chat_member: nextMember } = up;
+    const left = nextMember.status === "left" || nextMember.status === "kicked";
+    if (!left) return;
+    const userId = up.chat.id;
+    if (!config.allowedUserIds.includes(userId)) return;
+    startReplyKeyboardSent.delete(userId);
+    const { userDeleted, alarmCount } = deleteUserAndAllData(userId);
+    if (userDeleted) {
+      log.info("User left or stopped the bot; all data removed", {
+        userId,
+        alarmsRemoved: alarmCount,
+      });
+    }
   });
 
   bot.start(async (ctx) => {
@@ -328,11 +350,24 @@ export function registerHandlers(bot) {
     }
   );
 
-  bot.action(/^add:alarm:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+  bot.action(/^add:alarm:(daily|weekly|monthly|yearly|once)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const kind = "alarm";
     const recurrence = ctx.match[1];
     const uid = ctx.from.id;
+    if (recurrence === "once") {
+      setSession(uid, "ADD_ONCE_DATE", {
+        kind,
+        recurrence: "yearly",
+        oneTime: true,
+      });
+      await safeEditMessageText(
+        ctx,
+        "Send the date as YYYY-MM-DD (calendar day in your primary timezone).",
+        backMain()
+      );
+      return;
+    }
     if (recurrence === "daily") {
       setSession(uid, "ADD_WEEKDAYS", {
         kind,
@@ -489,11 +524,18 @@ export function registerHandlers(bot) {
     await safeEditMessageText(ctx, "Send the title (short label).", backMain());
   });
 
-  bot.action(/^pick:edit:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+  bot.action(/^pick:edit:(daily|weekly|monthly|yearly|once)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const uid = ctx.from.id;
     const t = ctx.match[1];
-    const alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
+    const alarms =
+      t === "once"
+        ? listAlarms(uid, { kind: "alarm", oneTime: true })
+        : listAlarms(uid, {
+            kind: "alarm",
+            recurrence: t,
+            excludeOneTime: t === "yearly",
+          });
     if (!alarms.length) {
       await safeEditMessageText(ctx, "No matching items.", editAlarmRootMenu());
       return;
@@ -505,11 +547,18 @@ export function registerHandlers(bot) {
     );
   });
 
-  bot.action(/^pick:del:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+  bot.action(/^pick:del:(daily|weekly|monthly|yearly|once)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const uid = ctx.from.id;
     const t = ctx.match[1];
-    const alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
+    const alarms =
+      t === "once"
+        ? listAlarms(uid, { kind: "alarm", oneTime: true })
+        : listAlarms(uid, {
+            kind: "alarm",
+            recurrence: t,
+            excludeOneTime: t === "yearly",
+          });
     if (!alarms.length) {
       await safeEditMessageText(
         ctx,
@@ -745,6 +794,33 @@ export function registerHandlers(bot) {
       return;
     }
 
+    if (scene === "ADD_ONCE_DATE") {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+      if (!m) {
+        await ctx.reply("Use YYYY-MM-DD, example: 2026-03-30");
+        return;
+      }
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      const day = Number(m[3]);
+      const primaryTz =
+        getPrimaryTimezone(uid) || config.defaultTimezone || "UTC";
+      const anchor = DateTime.fromObject(
+        { year, month, day },
+        { zone: primaryTz }
+      );
+      if (!anchor.isValid) {
+        await ctx.reply("Invalid calendar date for that month.");
+        return;
+      }
+      setSession(uid, "ADD_TITLE", {
+        ...data,
+        anchor_date: anchor.toISODate(),
+      });
+      await ctx.reply("Send the title (short label).");
+      return;
+    }
+
     if (scene === "ADD_MONTH_DAY") {
       const day = Number(text);
       if (!Number.isInteger(day) || day < 1 || day > 31) {
@@ -830,17 +906,21 @@ export function registerHandlers(bot) {
         anchor_date: data.anchor_date || null,
         weekdays: weekdaysJson,
         status: "active",
+        one_time: data.oneTime ? 1 : 0,
       });
       log.info("Alarm created", {
         alarmId,
         userId: uid,
         kind: "alarm",
         recurrence: data.recurrence,
+        oneTime: Boolean(data.oneTime),
         time_hhmm: hhmm,
       });
       clearSession(uid);
       await ctx.reply(
-        "Saved. It will use your primary timezone for scheduling.",
+        data.oneTime
+          ? "Saved. You get a single notification on that date and time; the alarm is then removed."
+          : "Saved. It will use your primary timezone for scheduling.",
         mainMenu()
       );
       return;
@@ -885,6 +965,9 @@ function formatAlarmLine(a) {
     getPrimaryTimezone(a.user_id) || config.defaultTimezone || "UTC";
   const wd = a.weekdays ? ` weekdays=${a.weekdays}` : "";
   const ad = a.anchor_date ? ` anchor=${a.anchor_date}` : "";
+  const recLabel = Number(a.one_time) === 1 ? "once" : a.recurrence;
+  const onceNote =
+    Number(a.one_time) === 1 ? " · removed after it fires" : "";
   const nowUtc = DateTime.utc();
   const remain =
     a.status === "active"
@@ -894,7 +977,7 @@ function formatAlarmLine(a) {
         )
       : "";
   return (
-    `ID ${a.id} · ${a.kind} · ${a.recurrence}\n` +
+    `ID ${a.id} · ${a.kind} · ${recLabel}${onceNote}\n` +
     `Title: ${a.title}\n` +
     `Description: ${a.description || "—"}\n` +
     `Time: ${a.time_hhmm} (${primaryTz})${wd}${ad}${remain}\n` +
