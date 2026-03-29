@@ -1,12 +1,11 @@
 # Telegram Alarm Bot
 
-A private, self-hosted Telegram bot for recurring **alarms** and **reminders**, multiple **IANA timezones**, **snooze** shortcuts, and **SQLite** persistence. Scheduling uses your **primary** timezone; notifications show the same instant in all saved zones.
+A private, self-hosted Telegram bot for recurring **alarms**, multiple **IANA timezones**, **snooze** shortcuts, and **SQLite** persistence. Scheduling uses your **primary** timezone; notifications show the same instant in all saved zones.
 
 ## Features
 
 - Main menu with inline buttons: add / edit / delete / list, activate & deactivate, timezone management, help
 - Recurrence: daily (optional weekdays), weekly, monthly, yearly
-- Alarm vs reminder (same scheduling; different label on delivery)
 - Snooze: 10–60 minutes from the notification message
 - Access control: only user ids listed in `TELEGRAM_USER_ID` may use the bot
 - Data stored in SQLite (file), no external database server

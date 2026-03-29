@@ -3,6 +3,7 @@ import { Telegraf } from "telegraf";
 import { config, assertConfig, describeConfigForLog } from "./config.js";
 import { getDb } from "./db.js";
 import { registerHandlers } from "./botHandlers.js";
+import { registerBotCommands } from "./botCommands.js";
 import { runSchedulerTick } from "./scheduler.js";
 import { log } from "./logger.js";
 
@@ -32,6 +33,7 @@ bot
     } catch (e) {
       log.warn("Could not call getMe after launch", e?.message || e);
     }
+    await registerBotCommands(bot);
     log.info("Press Ctrl+C to stop");
   })
   .catch((err) => {

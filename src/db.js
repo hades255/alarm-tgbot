@@ -49,6 +49,7 @@ function initSchema(database) {
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     );
 
+    /* kind: 'reminder' allowed for old rows; app only creates/schedules 'alarm'. */
     CREATE TABLE IF NOT EXISTS alarms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -303,13 +304,14 @@ export function listAlarms(userId, filters = {}) {
   return d.prepare(q).all(...params);
 }
 
+/** Only `kind = 'alarm'` is scheduled (`reminder` is legacy / unused). */
 export function listAlarmsForScheduler() {
   return getDb()
     .prepare(
       `SELECT a.*, t.timezone AS primary_tz
        FROM alarms a
        JOIN timezones t ON t.user_id = a.user_id AND t.is_primary = 1
-       WHERE a.status = 'active'`
+       WHERE a.status = 'active' AND a.kind = 'alarm'`
     )
     .all();
 }

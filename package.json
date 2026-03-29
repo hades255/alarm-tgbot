@@ -1,7 +1,7 @@
 {
   "name": "telegram-alarm-bot",
   "version": "1.0.0",
-  "description": "Personal Telegram alarm and reminder bot with SQLite storage",
+  "description": "Personal Telegram alarm bot with SQLite storage",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

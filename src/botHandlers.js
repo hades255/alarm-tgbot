@@ -19,9 +19,11 @@ import {
   getDb,
 } from "./db.js";
 import { parseTimeHhmm } from "./time.js";
+import { getNextAlarmFireUtc, formatRemainingUntilNext } from "./scheduler.js";
 import { log } from "./logger.js";
 import {
   mainMenu,
+  startCommandReplyKeyboard,
   addAlarmRootMenu,
   editAlarmRootMenu,
   deleteAlarmRootMenu,
@@ -84,10 +86,7 @@ function sun0ToLuxonWeekdays(arr) {
 const HELP_TEXT = `Alarm Bot — quick guide
 
 **Main menu**
-Use the buttons to add, edit, delete, or list alarms and reminders, manage timezones, or toggle active state.
-
-**Alarms vs reminders**
-Both support daily / weekly / monthly / yearly schedules. Use reminders for softer notifications; behavior is the same, labels differ.
+Use the buttons to add, edit, delete, or list alarms, manage timezones, or toggle active state.
 
 **Daily schedules**
 You can restrict to specific weekdays or choose “Every day”.
@@ -102,12 +101,19 @@ Add IANA zones (e.g. \`Europe/Berlin\`, \`America/New_York\`). One primary zone 
 When a notification fires, use the inline buttons to repeat after 10–60 minutes.
 
 **Commands**
+Tap **/** next to the message field to pick a command, or use the **/start** key above the keyboard (after your first /start).  
 /start — main menu  
 /help — this message  
 /add_alarm, /edit_alarm, /delete_alarm, /list_alarms  
 /active, /inactive — activate or deactivate an alarm  
 /set_timezone, /list_timezones, /set_primary_timezone  
 `;
+
+/** UI and scheduler only use alarms (reminder kind is legacy in DB). */
+const UI_ALARM_FILTER = { kind: "alarm" };
+
+/** Avoid sending the extra reply-keyboard hint on every /start (in-memory; resets on bot restart). */
+const startReplyKeyboardSent = new Set();
 
 export function registerHandlers(bot) {
   bot.catch((err, ctx) => {
@@ -137,6 +143,13 @@ export function registerHandlers(bot) {
   bot.start(async (ctx) => {
     syncUser(ctx);
     await ctx.reply("Welcome. Choose an action:", mainMenu());
+    const uid = ctx.from.id;
+    if (!startReplyKeyboardSent.has(uid)) {
+      startReplyKeyboardSent.add(uid);
+      await ctx.reply("Use the /start button below anytime to open the menu.", {
+        reply_markup: startCommandReplyKeyboard(),
+      });
+    }
   });
 
   bot.command("help", async (ctx) => {
@@ -230,11 +243,7 @@ export function registerHandlers(bot) {
 
   bot.action("menu:add_root", async (ctx) => {
     await ctx.answerCbQuery();
-    await safeEditMessageText(
-      ctx,
-      "Add alarm or reminder:",
-      addAlarmRootMenu()
-    );
+    await safeEditMessageText(ctx, "Add alarm:", addAlarmRootMenu());
   });
 
   bot.action("menu:edit_root", async (ctx) => {
@@ -310,54 +319,60 @@ export function registerHandlers(bot) {
   });
 
   bot.action(
-    /^add:(alarm|reminder):(daily|weekly|monthly|yearly)$/,
+    /^(add:reminder:(?:daily|weekly|monthly|yearly)|pick:(?:edit|del):reminder)$/,
     async (ctx) => {
-      await ctx.answerCbQuery();
-      const kind = ctx.match[1];
-      const recurrence = ctx.match[2];
-      const uid = ctx.from.id;
-      if (recurrence === "daily") {
-        setSession(uid, "ADD_WEEKDAYS", {
-          kind,
-          recurrence,
-          weekdaysLuxon: [],
-        });
-        await safeEditMessageText(
-          ctx,
-          "Select weekdays (tap to toggle), or choose Every day, then Done:",
-          weekdayPicker([])
-        );
-        return;
-      }
-      if (recurrence === "weekly") {
-        setSession(uid, "ADD_WEEKLY_ANCHOR", { kind, recurrence });
-        await safeEditMessageText(
-          ctx,
-          "Which weekday should this repeat on?",
-          weeklyDayPicker()
-        );
-        return;
-      }
-      if (recurrence === "monthly") {
-        setSession(uid, "ADD_MONTH_DAY", { kind, recurrence });
-        await safeEditMessageText(
-          ctx,
-          "Send the day of month (1–31) as a message.",
-          backMain()
-        );
-        return;
-      }
-      if (recurrence === "yearly") {
-        setSession(uid, "ADD_YEAR_MD", { kind, recurrence });
-        await safeEditMessageText(
-          ctx,
-          "Send month and day as MM-DD (example: 03-29).",
-          backMain()
-        );
-        return;
-      }
+      await ctx.answerCbQuery({
+        text: "Reminders are disabled. Use alarms only.",
+        show_alert: true,
+      });
     }
   );
+
+  bot.action(/^add:alarm:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const kind = "alarm";
+    const recurrence = ctx.match[1];
+    const uid = ctx.from.id;
+    if (recurrence === "daily") {
+      setSession(uid, "ADD_WEEKDAYS", {
+        kind,
+        recurrence,
+        weekdaysLuxon: [],
+      });
+      await safeEditMessageText(
+        ctx,
+        "Select weekdays (tap to toggle), or choose Every day, then Done:",
+        weekdayPicker([])
+      );
+      return;
+    }
+    if (recurrence === "weekly") {
+      setSession(uid, "ADD_WEEKLY_ANCHOR", { kind, recurrence });
+      await safeEditMessageText(
+        ctx,
+        "Which weekday should this repeat on?",
+        weeklyDayPicker()
+      );
+      return;
+    }
+    if (recurrence === "monthly") {
+      setSession(uid, "ADD_MONTH_DAY", { kind, recurrence });
+      await safeEditMessageText(
+        ctx,
+        "Send the day of month (1–31) as a message.",
+        backMain()
+      );
+      return;
+    }
+    if (recurrence === "yearly") {
+      setSession(uid, "ADD_YEAR_MD", { kind, recurrence });
+      await safeEditMessageText(
+        ctx,
+        "Send month and day as MM-DD (example: 03-29).",
+        backMain()
+      );
+    }
+  });
 
   bot.action(/^wd:(\d+|all|done)$/, async (ctx) => {
     const uid = ctx.from.id;
@@ -474,66 +489,48 @@ export function registerHandlers(bot) {
     await safeEditMessageText(ctx, "Send the title (short label).", backMain());
   });
 
-  bot.action(
-    /^pick:edit:(daily|weekly|monthly|yearly|reminder)$/,
-    async (ctx) => {
-      await ctx.answerCbQuery();
-      const uid = ctx.from.id;
-      const t = ctx.match[1];
-      let alarms = [];
-      if (t === "reminder") {
-        alarms = listAlarms(uid, { kind: "reminder" });
-      } else {
-        alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
-      }
-      if (!alarms.length) {
-        await safeEditMessageText(
-          ctx,
-          "No matching items.",
-          editAlarmRootMenu()
-        );
-        return;
-      }
-      await safeEditMessageText(
-        ctx,
-        "Pick an item to edit:",
-        alarmRowButtons(alarms, "eid")
-      );
+  bot.action(/^pick:edit:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const uid = ctx.from.id;
+    const t = ctx.match[1];
+    const alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
+    if (!alarms.length) {
+      await safeEditMessageText(ctx, "No matching items.", editAlarmRootMenu());
+      return;
     }
-  );
+    await safeEditMessageText(
+      ctx,
+      "Pick an item to edit:",
+      alarmRowButtons(alarms, "eid")
+    );
+  });
 
-  bot.action(
-    /^pick:del:(daily|weekly|monthly|yearly|reminder)$/,
-    async (ctx) => {
-      await ctx.answerCbQuery();
-      const uid = ctx.from.id;
-      const t = ctx.match[1];
-      let alarms = [];
-      if (t === "reminder") {
-        alarms = listAlarms(uid, { kind: "reminder" });
-      } else {
-        alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
-      }
-      if (!alarms.length) {
-        await safeEditMessageText(
-          ctx,
-          "No matching items.",
-          deleteAlarmRootMenu()
-        );
-        return;
-      }
+  bot.action(/^pick:del:(daily|weekly|monthly|yearly)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const uid = ctx.from.id;
+    const t = ctx.match[1];
+    const alarms = listAlarms(uid, { kind: "alarm", recurrence: t });
+    if (!alarms.length) {
       await safeEditMessageText(
         ctx,
-        "Pick an item to delete:",
-        alarmRowButtons(alarms, "did")
+        "No matching items.",
+        deleteAlarmRootMenu()
       );
+      return;
     }
-  );
+    await safeEditMessageText(
+      ctx,
+      "Pick an item to delete:",
+      alarmRowButtons(alarms, "did")
+    );
+  });
 
   bot.action(/^pick:on:root$/, async (ctx) => {
     await ctx.answerCbQuery();
     const uid = ctx.from.id;
-    const alarms = listAlarms(uid).filter((a) => a.status === "inactive");
+    const alarms = listAlarms(uid, UI_ALARM_FILTER).filter(
+      (a) => a.status === "inactive"
+    );
     if (!alarms.length) {
       await safeEditMessageText(ctx, "No inactive alarms.", toggleRootMenu());
       return;
@@ -548,7 +545,9 @@ export function registerHandlers(bot) {
   bot.action(/^pick:off:root$/, async (ctx) => {
     await ctx.answerCbQuery();
     const uid = ctx.from.id;
-    const alarms = listAlarms(uid).filter((a) => a.status === "active");
+    const alarms = listAlarms(uid, UI_ALARM_FILTER).filter(
+      (a) => a.status === "active"
+    );
     if (!alarms.length) {
       await safeEditMessageText(ctx, "No active alarms.", toggleRootMenu());
       return;
@@ -823,7 +822,7 @@ export function registerHandlers(bot) {
       }
       const alarmId = insertAlarm({
         user_id: uid,
-        kind: data.kind,
+        kind: "alarm",
         recurrence: data.recurrence,
         title: data.title,
         description: data.description || "",
@@ -835,7 +834,7 @@ export function registerHandlers(bot) {
       log.info("Alarm created", {
         alarmId,
         userId: uid,
-        kind: data.kind,
+        kind: "alarm",
         recurrence: data.recurrence,
         time_hhmm: hhmm,
       });
@@ -886,18 +885,26 @@ function formatAlarmLine(a) {
     getPrimaryTimezone(a.user_id) || config.defaultTimezone || "UTC";
   const wd = a.weekdays ? ` weekdays=${a.weekdays}` : "";
   const ad = a.anchor_date ? ` anchor=${a.anchor_date}` : "";
+  const nowUtc = DateTime.utc();
+  const remain =
+    a.status === "active"
+      ? formatRemainingUntilNext(
+          nowUtc,
+          getNextAlarmFireUtc(a, primaryTz, nowUtc)
+        )
+      : "";
   return (
     `ID ${a.id} · ${a.kind} · ${a.recurrence}\n` +
     `Title: ${a.title}\n` +
     `Description: ${a.description || "—"}\n` +
-    `Time: ${a.time_hhmm} (${primaryTz})${wd}${ad}\n` +
+    `Time: ${a.time_hhmm} (${primaryTz})${wd}${ad}${remain}\n` +
     `Status: ${a.status}`
   );
 }
 
-async function sendAlarmList(ctx, filters) {
+async function sendAlarmList(ctx, filters = {}) {
   const uid = ctx.from.id;
-  const alarms = listAlarms(uid, filters);
+  const alarms = listAlarms(uid, { kind: "alarm", ...filters });
   if (!alarms.length) {
     await ctx.reply("No alarms yet.", mainMenu());
     return;
@@ -906,9 +913,9 @@ async function sendAlarmList(ctx, filters) {
   await ctx.reply(body, mainMenu());
 }
 
-async function sendAlarmListEdit(ctx, filters) {
+async function sendAlarmListEdit(ctx, filters = {}) {
   const uid = ctx.from.id;
-  const alarms = listAlarms(uid, filters);
+  const alarms = listAlarms(uid, { kind: "alarm", ...filters });
   if (!alarms.length) {
     await safeEditMessageText(ctx, "No alarms yet.", mainMenu());
     return;
@@ -919,7 +926,9 @@ async function sendAlarmListEdit(ctx, filters) {
 
 async function sendToggleList(ctx, status) {
   const uid = ctx.from.id;
-  const alarms = listAlarms(uid).filter((a) => a.status === status);
+  const alarms = listAlarms(uid, UI_ALARM_FILTER).filter(
+    (a) => a.status === status
+  );
   const prefix = status === "active" ? "toff" : "ton";
   if (!alarms.length) {
     await ctx.reply(`No ${status} alarms.`, mainMenu());

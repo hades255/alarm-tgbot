@@ -57,6 +57,50 @@ export function shouldFireAlarm(alarm, primaryIana, nowUtc) {
   }
 }
 
+/**
+ * Next fire instant (UTC) strictly after `nowUtc`, using the same rules as the scheduler.
+ */
+export function getNextAlarmFireUtc(
+  alarm,
+  primaryIana,
+  nowUtc = DateTime.utc()
+) {
+  if (alarm.status !== "active") return null;
+  const t = parseTimeHhmm(alarm.time_hhmm);
+  if (!t) return null;
+  const localNow = nowUtc.setZone(primaryIana);
+  if (!localNow.isValid) return null;
+
+  for (let offset = 0; offset < 370; offset++) {
+    const dayBase = localNow.startOf("day").plus({ days: offset });
+    const cand = dayBase.set({
+      hour: t.hour,
+      minute: t.minute,
+      second: 0,
+      millisecond: 0,
+    });
+    if (!cand.isValid) continue;
+    if (cand <= localNow) continue;
+    const candUtc = cand.toUTC();
+    if (!shouldFireAlarm(alarm, primaryIana, candUtc)) continue;
+    return candUtc;
+  }
+  return null;
+}
+
+/** Human-readable countdown for list UI (empty if unknown). */
+export function formatRemainingUntilNext(fromUtc, nextUtc) {
+  if (!nextUtc || !nextUtc.isValid) return "";
+  const ms = nextUtc.toMillis() - fromUtc.toMillis();
+  if (ms <= 0) return " · next in <1m";
+  const totalMin = Math.ceil(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0 && m > 0) return ` · next in ${h}h ${m}m`;
+  if (h > 0) return ` · next in ${h}h`;
+  return ` · next in ${m}m`;
+}
+
 export function orderedZonesForUser(userId) {
   const rows = listUserTimezones(userId);
   const prim = rows.filter((r) => r.is_primary);
@@ -76,9 +120,9 @@ export function buildNotificationText({
   const primaryLine = lines[0];
   const otherLines = lines.slice(1);
   let body = `${title}\n\n${description || "(no description)"}\n\n`;
-  body += `Primary timezone: ${primaryLine}\n`;
+  body += `${primaryLine}\n`;
   if (otherLines.length) {
-    body += otherLines.map((l) => `Timezones: ${l}`).join("\n");
+    body += otherLines.map((l) => `${l}`).join("\n");
   }
   return body;
 }
@@ -142,15 +186,13 @@ export async function runSchedulerTick(bot) {
         userId: alarm.user_id,
         firedAtIsoUtc: firedIso,
       });
-      const kindLabel = alarm.kind === "reminder" ? "Reminder" : "Alarm";
-      await bot.telegram.sendMessage(alarm.user_id, `${kindLabel}\n\n${text}`, {
+      await bot.telegram.sendMessage(alarm.user_id, `Alarm\n\n${text}`, {
         reply_markup: { inline_keyboard: snoozeKeyboard(alarm.id, null) },
       });
       markAlarmFired(alarm.id, key);
       log.info("Scheduled alarm delivered", {
         alarmId: alarm.id,
         userId: alarm.user_id,
-        kind: alarm.kind,
         recurrence: alarm.recurrence,
         primaryTz: tz,
         minuteUtc: key,

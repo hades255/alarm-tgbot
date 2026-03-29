@@ -1,5 +1,15 @@
 import { Markup } from "telegraf";
 
+/** Persistent button above the composer; sends `/start` when tapped. */
+export function startCommandReplyKeyboard() {
+  return {
+    keyboard: [[{ text: "/start" }]],
+    resize_keyboard: true,
+    is_persistent: true,
+    input_field_placeholder: "Tap /start for the main menu",
+  };
+}
+
 export function mainMenu() {
   return Markup.inlineKeyboard([
     [
@@ -18,6 +28,7 @@ export function mainMenu() {
   ]);
 }
 
+/* Reminders disabled — only `kind: 'alarm'` is created or scheduled (see db + scheduler). */
 export function addAlarmRootMenu() {
   return Markup.inlineKeyboard([
     [
@@ -27,14 +38,6 @@ export function addAlarmRootMenu() {
     [
       Markup.button.callback("Monthly alarm", "add:alarm:monthly"),
       Markup.button.callback("Yearly alarm", "add:alarm:yearly"),
-    ],
-    [
-      Markup.button.callback("Daily reminder", "add:reminder:daily"),
-      Markup.button.callback("Weekly reminder", "add:reminder:weekly"),
-    ],
-    [
-      Markup.button.callback("Monthly reminder", "add:reminder:monthly"),
-      Markup.button.callback("Yearly reminder", "add:reminder:yearly"),
     ],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
@@ -50,7 +53,6 @@ export function editAlarmRootMenu() {
       Markup.button.callback("Edit monthly", "pick:edit:monthly"),
       Markup.button.callback("Edit yearly", "pick:edit:yearly"),
     ],
-    [Markup.button.callback("Edit reminder (all)", "pick:edit:reminder")],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
 }
@@ -65,7 +67,6 @@ export function deleteAlarmRootMenu() {
       Markup.button.callback("Delete monthly", "pick:del:monthly"),
       Markup.button.callback("Delete yearly", "pick:del:yearly"),
     ],
-    [Markup.button.callback("Delete reminder (all)", "pick:del:reminder")],
     [Markup.button.callback("Back to main menu", "menu:main")],
   ]);
 }
